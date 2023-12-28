@@ -11,6 +11,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from functools import wraps
 import os
 import jwt
+from dateutil import parser
+import re
 from auth import JWTBearer, create_jwt_token, decode_jwt_token
 from dotenv import load_dotenv
 load_dotenv(".env")
@@ -105,4 +107,12 @@ def get_user_role(current_user: dict = Depends(JWTBearer())):
     else:
         print("Admin")
         return "admin"
-    
+
+DATE_FORMAT_REGEX = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# Function to validate date format using regex
+def validate_date_format(date_str):
+    if DATE_FORMAT_REGEX.match(date_str):
+        return date.fromisoformat(date_str)
+    else:
+        raise HTTPException(status_code=422, detail="Invalid date format. Please provide the date in a valid format (YYYY-MM-DD).")

@@ -14,7 +14,7 @@ import jwt
 from dotenv import load_dotenv
 load_dotenv(".env")
 from auth import JWTBearer, create_jwt_token, decode_jwt_token
-from camp_helper import connect_to_mysql, verify_user, create_user, convert_dates_to_strings, check_admin, get_user_role
+from camp_helper import connect_to_mysql, verify_user, create_user, convert_dates_to_strings, check_admin, get_user_role, validate_date_format
 
 app = FastAPI()
 
@@ -23,6 +23,9 @@ QUERY= """
     FROM campaign_details
     GROUP BY campaign_id, campaign_name, communication_channel;
 """
+
+# Variable to store the created table name
+created_table_name = None
 
 # Route to handle user login and provide access token
 @app.post("/login")
@@ -81,6 +84,8 @@ async def execute_query():
 async def create_table(
     table_name: str
 ):
+    global created_table_name
+
     try:
         connection = connect_to_mysql()
         if not connection:
@@ -111,40 +116,59 @@ async def create_table(
         cursor.close()
         connection.close()
 
+        created_table_name = table_name
         return JSONResponse(content={"result": "Table created successfully"}, status_code=200)
     
     except Exception as e:
         return HTTPException(status_code=500, detail=f"Error executing SQL query: {e}")
 
 
-# Route to execute the create table SQL query
+# Route to execute the Join SQL query
 @app.get("/join_query/", dependencies=[Depends(JWTBearer())])
 async def join_query(
-    start_date: Optional[date] = Query(None, description="Start date for the query. For general users, the default is '2023-10-01'."),
-    end_date: Optional[date] = Query(None, description="End date for the query. For general users, the default is '2023-10-30'."),
+    start_date = Query(None, description="Start date for the query. For general users, the default is '2023-10-01'."),
+    end_date = Query(None, description="End date for the query. For general users, the default is '2023-10-30'."),
     role: str = Depends(get_user_role)
 ):
+    global created_table_name
+
     try:
+        # Validate date formats
+        if start_date:
+            start_date = validate_date_format(str(start_date))
+        if end_date:
+            end_date = validate_date_format(str(end_date))
+
+        # Additional check for end_date not less than start_date
+        if start_date is not None and end_date is not None and end_date < start_date:
+            raise HTTPException(status_code=422, detail="End date should not be less than start date.")
+
         connection = connect_to_mysql()
         if not connection:
             raise HTTPException(status_code=500, detail="Error connecting to the database")
         
         cursor = connection.cursor()
-        
+
+        if created_table_name:
+            table_to_use = created_table_name
+        else:
+            table_to_use = "unique_campaign_details"
+
+        print(table_to_use)
         if start_date is not None and end_date is not None and role == 'admin':
             QUERY = f"""
                 SELECT cd.campaign_id, cd.campaign_name, cd.communication_channel, ct.campaign_type, ct.mobile_number,
                 ct.campaign_date, ct.delivery
-                FROM unique_campaign_details cd
+                FROM {table_to_use} cd
                 JOIN campaign_target ct ON cd.campaign_id = ct.campaign_id AND cd.communication_channel = ct.channel
                 WHERE ct.campaign_date BETWEEN '{start_date}' AND '{end_date}' ORDER BY ct.campaign_date;
             """
         else:
             print("Else part is executed")
-            QUERY = """
+            QUERY = f"""
                 SELECT cd.campaign_id, cd.campaign_name, cd.communication_channel, ct.campaign_type, ct.mobile_number,
                 ct.campaign_date, ct.delivery
-                FROM unique_campaign_details cd
+                FROM {table_to_use} cd
                 JOIN campaign_target ct ON cd.campaign_id = ct.campaign_id AND cd.communication_channel = ct.channel
                 WHERE ct.campaign_date BETWEEN cd.start_date AND cd.end_date ORDER BY ct.campaign_date;
             """
@@ -162,18 +186,35 @@ async def join_query(
 
         return JSONResponse(content={"result": converted_result}, status_code=200)
 
+    except HTTPException as http_exception:
+        return http_exception
+
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid date format. Please use YYYY-MM-DD")
+
     except Exception as e:
         return HTTPException(status_code=500, detail=f"Error executing SQL query: {e}")
     
 
-# Route to execute the create table SQL query
+# Route to execute the comm_via_channel SQL query
 @app.get("/comm_via_channel/", dependencies=[Depends(JWTBearer())])
 async def comm_via_channel(
-    start_date: Optional[date] = Query(None, description="Start date for the query. For general users, the default is '2023-10-01'."),
-    end_date: Optional[date] = Query(None, description="End date for the query. For general users, the default is '2023-10-30'."),
+    start_date = Query(None, description="Start date for the query. For general users, the default is '2023-10-01'."),
+    end_date = Query(None, description="End date for the query. For general users, the default is '2023-10-30'."),
     role: str = Depends(get_user_role)
 ):
+    global created_table_name
     try:
+        # Validate date formats
+        if start_date:
+            start_date = validate_date_format(str(start_date))
+        if end_date:
+            end_date = validate_date_format(str(end_date))
+
+        # Additional check for end_date not less than start_date
+        if start_date is not None and end_date is not None and end_date < start_date:
+            raise HTTPException(status_code=422, detail="End date should not be less than start date.")
+
         connection = connect_to_mysql()
         if not connection:
             raise HTTPException(status_code=500, detail="Error connecting to the database")
@@ -182,18 +223,24 @@ async def comm_via_channel(
         
         role = get_user_role()
         print(role)
+
+        if created_table_name:
+            table_to_use = created_table_name
+        else:
+            table_to_use = "unique_campaign_details"
+
         if start_date is not None and end_date is not None and role == 'admin':
             QUERY = f"""
                 SELECT cd.campaign_name, cd.communication_channel, COUNT(DISTINCT ct.mobile_number) AS total_customers_reached
-                FROM unique_campaign_details cd
+                FROM {table_to_use} cd
                 JOIN campaign_target ct ON cd.campaign_id = ct.campaign_id AND cd.communication_channel = ct.channel
                 WHERE ct.campaign_date BETWEEN '{start_date}' AND '{end_date}'
                 GROUP BY cd.campaign_name, cd.communication_channel;
             """
         else:
-            QUERY = """
+            QUERY = f"""
                 SELECT cd.campaign_name, cd.communication_channel, COUNT(DISTINCT ct.mobile_number) AS total_customers_reached
-                FROM unique_campaign_details cd
+                FROM {table_to_use} cd
                 JOIN campaign_target ct ON cd.campaign_id = ct.campaign_id AND cd.communication_channel = ct.channel
                 WHERE ct.campaign_date BETWEEN cd.start_date AND cd.end_date
                 GROUP BY cd.campaign_name, cd.communication_channel;
@@ -216,14 +263,25 @@ async def comm_via_channel(
         return HTTPException(status_code=500, detail=f"Error executing SQL query: {e}")
 
 
-# Route to execute the create table SQL query
+# Route to execute the comm_via_campaign_type SQL query
 @app.get("/comm_via_campaign_type/", dependencies=[Depends(JWTBearer())])
 async def comm_via_campaign_type(
-    start_date: Optional[date] = Query(None, description="Start date for the query. For general users, the default is '2023-10-01'."),
-    end_date: Optional[date] = Query(None, description="End date for the query. For general users, the default is '2023-10-30'."),
+    start_date = Query(None, description="Start date for the query. For general users, the default is '2023-10-01'."),
+    end_date = Query(None, description="End date for the query. For general users, the default is '2023-10-30'."),
     role: str = Depends(get_user_role)
 ):
+    global created_table_name
     try:
+        # Validate date formats
+        if start_date:
+            start_date = validate_date_format(str(start_date))
+        if end_date:
+            end_date = validate_date_format(str(end_date))
+
+        # Additional check for end_date not less than start_date
+        if start_date is not None and end_date is not None and end_date < start_date:
+            raise HTTPException(status_code=422, detail="End date should not be less than start date.")
+            
         connection = connect_to_mysql()
         if not connection:
             raise HTTPException(status_code=500, detail="Error connecting to the database")
@@ -231,18 +289,24 @@ async def comm_via_campaign_type(
         cursor = connection.cursor()
         
         role = get_user_role()
+
+        if created_table_name:
+            table_to_use = created_table_name
+        else:
+            table_to_use = "unique_campaign_details"
+
         if start_date is not None and end_date is not None and role == 'admin':
             QUERY = f"""
                 SELECT cd.campaign_name, ct.campaign_type, COUNT(DISTINCT ct.mobile_number) AS customer_count
-                FROM unique_campaign_details cd
+                FROM {table_to_use} cd
                 JOIN campaign_target ct ON cd.campaign_id = ct.campaign_id AND cd.communication_channel = ct.channel
                 WHERE ct.campaign_date BETWEEN '{start_date}' AND '{end_date}'
                 GROUP BY cd.campaign_name, ct.campaign_type;
             """
         else:
-            QUERY = """
+            QUERY = f"""
                 SELECT cd.campaign_name, ct.campaign_type, COUNT(DISTINCT ct.mobile_number) AS customer_count
-                FROM unique_campaign_details cd
+                FROM {table_to_use} cd
                 JOIN campaign_target ct ON cd.campaign_id = ct.campaign_id AND cd.communication_channel = ct.channel
                 WHERE ct.campaign_date BETWEEN cd.start_date AND cd.end_date
                 GROUP BY cd.campaign_name, ct.campaign_type;
